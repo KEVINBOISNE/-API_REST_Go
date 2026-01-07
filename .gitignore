@@ -1,0 +1,14 @@
+.exe
+.dll
+.so
+.dylib
+
+.env       
+.env.local
+docker-compose.override.yml
+
+postgres_data/
+
+bin/
+build/
+dist/
