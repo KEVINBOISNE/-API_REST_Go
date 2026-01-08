@@ -21,10 +21,8 @@ import (
 )
 
 func main() {
-	// Chargement des variables d'environnement
 	_ = godotenv.Load()
 
-	// Connexion à la DB
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		log.Fatal("DATABASE_URL n'est pas défini")
@@ -94,7 +92,6 @@ func main() {
         return
     }
 
-    // Ajoute les timestamps
     book.CreatedAt = time.Now().Format("2006-01-02")
     book.UpdatedAt = book.CreatedAt
 
@@ -151,7 +148,6 @@ func main() {
 		Handler: r,
 	}
 
-	// Lancement serveur dans goroutine
 	go func() {
 		log.Println("Serveur HTTP démarré sur :8080")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -159,7 +155,6 @@ func main() {
 		}
 	}()
 
-	// Gestion du signal d'arrêt
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt)
 	<-stop
