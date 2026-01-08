@@ -12,101 +12,72 @@ import (
 	"time"
 
 	"api/model"
+	"api/internal/repository"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	_ "github.com/jackc/pgx/v4/stdlib"
 	"github.com/joho/godotenv"
+	_ "github.com/jackc/pgx/v4/stdlib"
 )
 
 func main() {
+	// Chargement des variables d'environnement
 	_ = godotenv.Load()
 
+	// Connexion à la DB
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		log.Fatal("DATABASE_URL n'est pas défini !")
+		log.Fatal("DATABASE_URL n'est pas défini")
 	}
 
 	db, err := sql.Open("pgx", dbURL)
 	if err != nil {
-		log.Fatalf("DB error: %v", err)
+		log.Fatalf("Erreur DB: %v", err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Fatalf("Erreur fermeture DB: %v", err)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
-		log.Fatalf("DB unreachable: %v", err)
+		log.Fatalf("DB inaccessible: %v", err)
 	}
 
 	log.Println("Connexion PostgreSQL OK")
 
+	// Repository
+	repo := repository.NewBookRepositorySQL(db)
+
+	// Router Chi
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
+	/* ---------- GET ALL ---------- */
 	r.Get("/books", func(w http.ResponseWriter, r *http.Request) {
-		rows, err := db.Query(`
-		SELECT id, title, author, years, created_at, updated_at
-		FROM books`)
-
+		books, err := repo.List(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		defer rows.Close()
-
-		books := []model.Book{}
-
-		for rows.Next() {
-			var b model.Book
-			err := rows.Scan(
-				&b.Id,
-				&b.Title,
-				&b.Author,
-				&b.Years,
-				&b.CreatedAt,
-				&b.UpdatedAt,
-			)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			books = append(books, b)
-		}
-
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(books)
 	})
 
-	r.Post("/books", func(w http.ResponseWriter, r *http.Request) {
-		book := &model.Book{}
-
-		createdBook, err := model.CreateBookFromRequest(book, r.Body)
+	/* ---------- GET BY ID ---------- */
+	r.Get("/books/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(chi.URLParam(r, "id"))
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, "ID invalide", http.StatusBadRequest)
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(createdBook)
-	})
-
-	r.Put("/books/{id}", func(w http.ResponseWriter, r *http.Request) {
-		idParam := chi.URLParam(r, "id")
-		id, err := strconv.Atoi(idParam)
+		book, err := repo.GetByID(r.Context(), id)
 		if err != nil {
-			http.Error(w, "Invalid ID", http.StatusBadRequest)
-			return
-		}
-
-		book := &model.Book{
-			Id: id,
-		}
-
-		if err := model.UpdateBookFromRequest(book, r.Body); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, "Livre non trouvé", http.StatusNotFound)
 			return
 		}
 
@@ -114,29 +85,92 @@ func main() {
 		json.NewEncoder(w).Encode(book)
 	})
 
+	/* ---------- POST ---------- */
+	r.Post("/books", func(w http.ResponseWriter, r *http.Request) {
+    // PAS besoin de créer un Book vide avant
+    book, err := model.CreateBookFromRequest(r.Body)
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+
+    // Ajoute les timestamps
+    book.CreatedAt = time.Now().Format("2006-01-02")
+    book.UpdatedAt = book.CreatedAt
+
+    if err := repo.Create(r.Context(), book); err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusCreated)
+    json.NewEncoder(w).Encode(book)
+})
+
+
+	/* ---------- PUT ---------- */
+	r.Put("/books/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.Atoi(chi.URLParam(r, "id"))
+
+		book, err := repo.GetByID(r.Context(), id)
+		if err != nil {
+			http.Error(w, "Livre non trouvé", http.StatusNotFound)
+			return
+		}
+
+		if err := model.UpdateBookFromRequest(book, r.Body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		book.UpdatedAt = time.Now().Format("2006-01-02")
+
+		if err := repo.Update(r.Context(), book); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(book)
+	})
+
+	/* ---------- DELETE ---------- */
+	r.Delete("/books/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.Atoi(chi.URLParam(r, "id"))
+		if err := repo.Delete(r.Context(), id); err != nil {
+			http.Error(w, "Livre non trouvé", http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// Serveur HTTP
 	server := &http.Server{
 		Addr:    ":8080",
 		Handler: r,
 	}
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt)
-
+	// Lancement serveur dans goroutine
 	go func() {
 		log.Println("Serveur HTTP démarré sur :8080")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Serveur error: %v", err)
+			log.Fatalf("Erreur serveur: %v", err)
 		}
 	}()
 
+	// Gestion du signal d'arrêt
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt)
 	<-stop
+
 	log.Println("Arrêt du serveur...")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
-	server.Shutdown(shutdownCtx)
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("Erreur arrêt serveur: %v", err)
+	}
 
 	log.Println("Application arrêtée proprement")
-
-	
 }
