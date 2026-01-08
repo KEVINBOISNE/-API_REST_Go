@@ -3,13 +3,17 @@ package model
 import (
 	"os"
 	"io"
+	"time"
+	"errors"
+	"strings"
 	"encoding/json"
 	"html/template"
 	_ "github.com/jackc/pgx/v4/stdlib"
 )
 
 type Book struct {
-	Name  string
+	Id int
+	Title  string
 	Author string
 	Years int
 	CreatedAt string
@@ -22,11 +26,11 @@ type Book struct {
 // err = tmpl.Execute(os.Stdout, booker)
 // if err != nil { panic(err) }
 
-func New(name string, author string, years int, created_at string, updated_at string) (*Book, error) {
+func New(id int, title string, author string, years int, created_at string, updated_at string) (*Book, error) {
 
-const tmpl = "Nom : {{ .Name }}. Auteur : {{ .Author }}. Annee : {{ .Years }}. Creation : {{ .CreatedAt }}. modification : {{ .UpdatedAt }}"
+const tmpl = "Titre : {{ .Title }}. Auteur : {{ .Author }}. Annee : {{ .Years }}. Creation : {{ .CreatedAt }}. modification : {{ .UpdatedAt }}"
 
-p := &Book{Name: name,Author: author,Years: years,CreatedAt: created_at,UpdatedAt: updated_at}
+p := &Book{Id : id, Title: title, Author: author,Years: years,CreatedAt: created_at,UpdatedAt: updated_at}
 
 t, err := template.New("tmpl").Parse(tmpl)
 
@@ -51,14 +55,14 @@ func CreateBookFromRequest(b *Book, r io.Reader) (*Book, error) {
 	if err := json.NewDecoder(r).Decode(&req); err != nil {
 		return nil, err
 	}
-
-	b.Name = req.Name
+	b.Id = req.Id
+	b.Title = req.Title
 	b.Author = req.Author
 	b.Years = req.Years
 	b.CreatedAt = req.CreatedAt
 	b.UpdatedAt = req.UpdatedAt
 
-	const tmplStr = "Nom : {{ .Name }}. Auteur : {{ .Author }}. Annee : {{ .Years }}. Creation : {{ .CreatedAt }}. Modification : {{ .UpdatedAt }}\n"
+	const tmplStr = "Titre : {{ .Title }}. Auteur : {{ .Author }}. Annee : {{ .Years }}. Creation : {{ .CreatedAt }}. Modification : {{ .UpdatedAt }}\n"
 	tmpl, err := template.New("book").Parse(tmplStr)
 	if err != nil {
 		return nil, err
@@ -70,3 +74,41 @@ func CreateBookFromRequest(b *Book, r io.Reader) (*Book, error) {
 
 	return b, nil
 }
+
+
+func UpdateBookFromRequest(b *Book, r io.Reader) error {
+	var req Book
+
+	if err := json.NewDecoder(r).Decode(&req); err != nil {
+		return err
+	}
+
+	b.Title = req.Title
+	b.Author = req.Author
+	b.Years = req.Years
+	b.UpdatedAt = req.UpdatedAt
+
+	if err := ValidateBook(b); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func ValidateBook(b *Book) error {
+	if strings.TrimSpace(b.Title) == "" {
+		return errors.New("title is required")
+	}
+
+	if strings.TrimSpace(b.Author) == "" {
+		return errors.New("author is required")
+	}
+
+	currentYear := time.Now().Year()
+	if b.Years < 1450 || b.Years > currentYear+1 {
+		return errors.New("years must be between 1450 and current year")
+	}
+
+	return nil
+}
+

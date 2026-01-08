@@ -3,19 +3,24 @@ package main
 import (
 	"context"
 	"database/sql"
-	"fmt"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"time"
+
 	"api/model"
-	"github.com/joho/godotenv"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	_ "github.com/jackc/pgx/v4/stdlib"
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	_ = godotenv.Load() 
+	_ = godotenv.Load()
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -24,32 +29,94 @@ func main() {
 
 	db, err := sql.Open("pgx", dbURL)
 	if err != nil {
-		log.Fatalf("Impossible de se connecter à la DB : %v", err)
+		log.Fatalf("DB error: %v", err)
 	}
+	defer db.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
-		log.Fatalf("Impossible de joindre la DB : %v", err)
+		log.Fatalf("DB unreachable: %v", err)
 	}
 
-	log.Println("Connexion à PostgreSQL validée")
+	log.Println("Connexion PostgreSQL OK")
 
-	_, err = model.New("One Piece", "Eiichiro Oda", 1997, "07/01/1997", "08/01/2026")
-	if err != nil {
-		log.Fatal(err)
-	}
+	r := chi.NewRouter()
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
 
-	_, err = model.New("One Piece", "Eiichiro Oda", 1997, "07/01/1997", "08/01/2026")
-	if err != nil {
-		log.Fatal(err)
-	}
+	r.Get("/books", func(w http.ResponseWriter, r *http.Request) {
+		rows, err := db.Query(`
+		SELECT id, title, author, years, created_at, updated_at
+		FROM books`)
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		books := []model.Book{}
+
+		for rows.Next() {
+			var b model.Book
+			err := rows.Scan(
+				&b.Id,
+				&b.Title,
+				&b.Author,
+				&b.Years,
+				&b.CreatedAt,
+				&b.UpdatedAt,
+			)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			books = append(books, b)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(books)
+	})
+
+	r.Post("/books", func(w http.ResponseWriter, r *http.Request) {
+		book := &model.Book{}
+
+		createdBook, err := model.CreateBookFromRequest(book, r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(createdBook)
+	})
+
+	r.Put("/books/{id}", func(w http.ResponseWriter, r *http.Request) {
+		idParam := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idParam)
+		if err != nil {
+			http.Error(w, "Invalid ID", http.StatusBadRequest)
+			return
+		}
+
+		book := &model.Book{
+			Id: id,
+		}
+
+		if err := model.UpdateBookFromRequest(book, r.Body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(book)
+	})
 
 	server := &http.Server{
-		Addr: ":8080",
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprintf(w, "Hello, world!")
-		}),
+		Addr:    ":8080",
+		Handler: r,
 	}
 
 	stop := make(chan os.Signal, 1)
@@ -58,46 +125,18 @@ func main() {
 	go func() {
 		log.Println("Serveur HTTP démarré sur :8080")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Erreur serveur : %v", err)
+			log.Fatalf("Serveur error: %v", err)
 		}
 	}()
 
 	<-stop
-	log.Println("Signal d'arrêt reçu, fermeture propre...")
-
+	log.Println("Arrêt du serveur...")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
-
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("Erreur lors de l'arrêt du serveur HTTP : %v", err)
-	}
-
-	if err := db.Close(); err != nil {
-		log.Fatalf("Erreur lors de la fermeture de la DB : %v", err)
-	}
+	server.Shutdown(shutdownCtx)
 
 	log.Println("Application arrêtée proprement")
 
-
-	//const name = "Alice"
-
-	// const tmpl = "Nom : {{ .Name }}. Auteur : {{ .Author }}. Annee : {{ .Years }}. Creation : {{ .Created_at }}. modification : {{ .Updated_at }}"
-
-	// t, err := template.New("tmpl").Parse(tmpl)
-
-	// if err != nil {
-
-	// panic(err)
-
-	// }
-
-	// err = t.Execute(os.Stdout, tmpl)
-
-	// if err != nil {
-	// 	log.Println("c'est bon ")
-	// panic(err)
-
-	// }
-
+	
 }
